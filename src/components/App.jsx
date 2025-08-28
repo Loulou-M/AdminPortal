@@ -8,6 +8,7 @@ import FileUpload from './Files/FileUpload';
 import TemplateList from './Templates/TemplateList';
 import TemplateForm from './Templates/TemplateForm';
 import SiteForm from './Sites/SiteForm';
+import SiteList from './Sites/SiteList';
 import { initGoogleApiClient, isSignedIn } from '../services/auth.service';
 import { loadFromStorage, saveToStorage } from '../utils/storage';
 
@@ -196,7 +197,44 @@ const App = () => {
             
             {activeView === 'sites' && (
               <div className="sites-view">
-                <SiteForm onSaveComplete={handleSiteCreated} />
+                <div className="sites-header">
+                  <h2>Construction Sites</h2>
+                  <button onClick={() => handleViewChange('new-site')}>
+                    Create New Site
+                  </button>
+                </div>
+                <SiteList 
+                  onEdit={(site) => {
+                    console.log('Edit site:', site);
+                    // In a full implementation, you would handle site editing here
+                  }}
+                  onViewDocuments={(site) => {
+                    // Set the selected folder ID and navigate to documents view
+                    if (site.folder_type === 'GoogleDrive' && site.folder_link) {
+                      // Extract folder ID from Google Drive link
+                      const folderIdMatch = site.folder_link.match(/folders\/([^/?]+)/);
+                      if (folderIdMatch && folderIdMatch[1]) {
+                        handleFolderSelect(folderIdMatch[1]);
+                        handleViewChange('documents');
+                      }
+                    }
+                  }}
+                  refreshTrigger={refreshTrigger}
+                />
+              </div>
+            )}
+            
+            {activeView === 'new-site' && (
+              <div className="new-site-view">
+                <SiteForm 
+                  onSaveComplete={(newSite) => {
+                    handleSiteCreated(newSite);
+                    // After creating a site, go back to the sites list
+                    handleViewChange('sites');
+                    // Trigger refresh to show the new site
+                    setRefreshTrigger(prev => prev + 1);
+                  }} 
+                />
               </div>
             )}
             
