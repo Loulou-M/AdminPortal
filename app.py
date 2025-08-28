@@ -808,34 +808,35 @@ def create_shareable_link():
 
 @app.route('/api/generate_qr', methods=['POST'])
 def generate_qr():
-    """Generate a QR code for a site/resource"""
-    app.logger.info("POST /api/generate_qr called")
+    """Generate a QR code for a site/resource (with debug logs)"""
+    print("[/api/generate_qr] start", flush=True)
 
     credentials = get_credentials()
     if not credentials:
-        app.logger.warning("Unauthorized request to /api/generate_qr (no credentials)")
+        print("[/api/generate_qr] no credentials in session", flush=True)
         return jsonify({'error': 'Authentication required. Please sign in.'}), 401
 
     try:
-        data = request.get_json(silent=True) or {}
-        app.logger.debug(f"/api/generate_qr payload keys: {list(data.keys())}")
+        data = request.json or {}
+        site_name = (data.get('site_name') or '').strip()
+        site_location = (data.get('site_location') or '').strip()
+        resource_url = (data.get('resource_url') or '').strip()
 
-        site_name = str(data.get('site_name') or '').strip()
-        site_location = str(data.get('site_location') or '').strip()
-        resource_url = str(data.get('resource_url') or '').strip()
-        address = str(data.get('address') or site_name)
+        print(f"[/api/generate_qr] payload: site_name='{site_name}', "
+              f"site_location='{site_location}', resource_url='{resource_url}'", flush=True)
 
         if not site_name:
-            app.logger.warning("Validation failed: site_name missing")
+            print("[/api/generate_qr] validation failed: missing site_name", flush=True)
             return jsonify({'error': 'Site name is required'}), 400
         if not resource_url:
-            app.logger.warning("Validation failed: resource_url missing")
+            print("[/api/generate_qr] validation failed: missing resource_url", flush=True)
             return jsonify({'error': 'Resource URL is required'}), 400
 
-        qr_id = f"site_{uuid.uuid4().hex[:8]}"
-        app.logger.debug(f"qr_id generated: {qr_id}")
+        # Ensure output directory exists
+        os.makedirs(QR_CODES_DIR, exist_ok=True)
+        print(f"[/api/generate_qr] ensured QR_CODES_DIR exists: {QR_CODES_DIR}", flush=True)
 
-        # Build QR
+        # --- Build QR ---
         qr = qrcode.QRCode(
             version=1,
             error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -845,60 +846,119 @@ def generate_qr():
         qr.add_data(resource_url)
         qr.make(fit=True)
 
-        # qrcode's PilImage wrapper -> unwrap to real PIL.Image and normalize mode
-        _qr_img = qr.make_image(fill_color="black", back_color="white")
-        img = getattr(_qr_img, "get_image", lambda: _qr_img)().convert("RGB")
-        width, height = img.size
-        app.logger.debug(f"Base QR image size: {width}x{height}")
+        qr_img = qr.make_image(fill_color="black", back_color="white")
+        # Some versions return a wrapper; ensure a real PIL.Image and correct mode
+        if hasattr(qr_img, "get_image"):
+            qr_img = qr_img.get_image()
+        qr_img = qr_img.convert("RGB")
 
-        # Choose a font (best-effort)
-        try:
-            font = ImageFont.truetype("DejaVuSans.ttf", 16)
-            app.logger.debug("Using font: DejaVuSans.ttf")
-        except Exception:
+        qr_w, qr_h = qr_img.size
+        print(f"[/api/generate_qr] qr size: {qr_w}x{qr_h}, mode={qr_img.mode}", flush=True)
+
+        # --- Prepare font ---
+        # Try a common font; fall back to default
+        font = None
+        tried_fonts = []
+        for font_name in ["DejaVuSans.ttf", "Arial.ttf", "Arial"]:
             try:
-                font = ImageFont.truetype("Arial.ttf", 16)
-                app.logger.debug("Using font: Arial.ttf")
-            except Exception:
-                font = ImageFont.load_default()
-                app.logger.debug("Using default PIL font")
+                font = ImageFont.truetype(font_name, 16)
+                print(f"[/api/generate_qr] using TTF font: {font_name}", flush=True)
+                break
+            except Exception as fe:
+                tried_fonts.append(font_name)
+        if font is None:
+            font = ImageFont.load_default()
+            print(f"[/api/generate_qr] fallback to default font; tried={tried_fonts}", flush=True)
 
-        # Compute text block height
-        try:
-            ascent, descent = font.getmetrics()
-            line_h = ascent + descent
-        except Exception:
-            line_h = 20
-        spacing = 10
-        text_block_h = (line_h * 2) + spacing + 10  # two lines + a bit of padding
+        # --- Helper: wrap text to available width ---
+        def wrap_text(draw, text, max_width, font):
+            if not text:
+                return []
+            words = text.split()
+            lines, cur = [], []
+            for w in words:
+                test = (" ".join(cur + [w])).strip()
+                bbox = draw.textbbox((0, 0), test, font=font)
+                width = bbox[2] - bbox[0]
+                if width <= max_width or not cur:
+                    cur.append(w)
+                else:
+                    lines.append(" ".join(cur))
+                    cur = [w]
+            if cur:
+                lines.append(" ".join(cur))
+            return lines
 
-        new_height = height + text_block_h
-        new_img = Image.new("RGB", (width, new_height), color="white")
+        # Create a temp drawing context to measure
+        tmp_canvas = Image.new("RGB", (qr_w, qr_h), "white")
+        tmp_draw = ImageDraw.Draw(tmp_canvas)
 
-        # Explicit 4-tuple paste box avoids "use 4-item box" error
-        new_img.paste(img, (0, 0, width, height))
+        # Compute wrapped lines to fit the QR width with small padding
+        text_max_width = qr_w - 20
+        name_lines = wrap_text(tmp_draw, site_name, text_max_width, font)
+        loc_lines = wrap_text(tmp_draw, site_location, text_max_width, font)
 
-        # Draw labels (guard against None)
-        draw = ImageDraw.Draw(new_img)
-        text1 = site_name or ""
-        text2 = site_location or ""
-        y1 = height + 5
-        y2 = y1 + line_h + 5
+        # Measure total text height
+        line_height = (tmp_draw.textbbox((0, 0), "Ag", font=font)[3]
+                       - tmp_draw.textbbox((0, 0), "Ag", font=font)[1])
+        # Add a little vertical spacing between blocks
+        padding_top = 10
+        gap_between = 6
+        block_gap = 12 if (name_lines and loc_lines) else 0
+        text_lines_count = len(name_lines) + len(loc_lines)
+        text_height = (padding_top +
+                       (len(name_lines) * line_height) +
+                       (block_gap if name_lines and loc_lines else 0) +
+                       (len(loc_lines) * line_height) +
+                       10)  # bottom padding
 
-        app.logger.debug(f"Drawing text lines at y={y1} and y={y2}")
-        draw.text((10, y1), text1, fill="black", font=font)
-        draw.text((10, y2), text2, fill="black", font=font)
+        # --- Compose final image ---
+        new_h = qr_h + max(60, text_height)  # ensure at least 60px like before
+        out = Image.new("RGB", (qr_w, new_h), color="white")
+        print(f"[/api/generate_qr] canvas size: {qr_w}x{new_h}", flush=True)
 
-        # Ensure output dir exists
-        os.makedirs(QR_CODES_DIR, exist_ok=True)
-        qr_filename = f"{qr_id}.png"
-        qr_path = os.path.join(QR_CODES_DIR, qr_filename)
-        new_img.save(qr_path, format="PNG")
-        app.logger.info(f"QR image saved: {qr_path}")
+        # Paste QR at top-left
+        out.paste(qr_img, (0, 0))
+        print("[/api/generate_qr] pasted QR onto canvas", flush=True)
+
+        # Draw text centered relative to QR width
+        draw = ImageDraw.Draw(out)
+        cursor_y = qr_h + padding_top
+
+        def draw_centered_lines(lines):
+            nonlocal cursor_y
+            for line in lines:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                w = bbox[2] - bbox[0]
+                x = max(10, (qr_w - w) // 2)  # center, but keep min left padding
+                draw.text((x, cursor_y), line, fill="black", font=font)
+                cursor_y += line_height + gap_between
+
+        # Site name (bold-ish: draw twice for a tiny faux bold effect)
+        if name_lines:
+            for _ in range(1):
+                draw_centered_lines(name_lines)
+
+        # Extra gap between name and location blocks
+        if name_lines and loc_lines:
+            cursor_y += (block_gap - gap_between if block_gap > gap_between else 0)
+
+        # Location
+        if loc_lines:
+            draw_centered_lines(loc_lines)
+
+        # --- Save file ---
+        qr_id = f"site_{uuid.uuid4().hex[:8]}"
+        filename = f"{qr_id}.png"
+        path = os.path.join(QR_CODES_DIR, filename)
+        out.save(path, format="PNG")
+        print(f"[/api/generate_qr] saved PNG: {path}", flush=True)
 
         # Public URL
-        qr_url = f"{request.host_url.rstrip('/')}/qrcodes/{qr_filename}"
-        app.logger.debug(f"QR public URL: {qr_url}")
+        # Ensure host_url ends with slash once
+        base = request.host_url if request.host_url.endswith("/") else (request.host_url + "/")
+        qr_url = f"{base}qrcodes/{filename}"
+        print(f"[/api/generate_qr] qr_url: {qr_url}", flush=True)
 
         result = {
             'qr_id': qr_id,
@@ -908,13 +968,14 @@ def generate_qr():
             'site_location': site_location,
             'resource_url': resource_url
         }
-        app.logger.info("QR generation succeeded")
+
+        print("[/api/generate_qr] success", flush=True)
         return jsonify(result)
 
     except Exception as e:
-        app.logger.error(f"Error generating QR code: {e}")
-        app.logger.debug("Traceback:\n" + traceback.format_exc())
-        return jsonify({'error': str(e)}), 500
+        print(f"[/api/generate_qr] ERROR: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        return jsonify({'error': 'Failed to generate QR code', 'details': str(e)}), 500
 
 @app.route('/qrcodes/<filename>', methods=['GET'])
 def serve_qrcode(filename):
@@ -1245,34 +1306,44 @@ def get_site(site_id):
 
 @app.route('/api/sites', methods=['POST'])
 def create_site():
-    """Create a new site with QR code"""
+    """Create a new site with QR code (fixed QR paste + debug logs)"""
+    print("[/api/sites POST] start", flush=True)
+
     credentials = get_credentials()
     if not credentials:
+        print("[/api/sites POST] no credentials in session", flush=True)
         return jsonify({'error': 'Authentication required. Please sign in.'}), 401
-        
+
     try:
         drive_service = get_drive_service()
-        
-        # Get user info for created_by field
         about = drive_service.about().get(fields='user').execute()
         user_email = about.get('user', {}).get('emailAddress')
-        
-        data = request.json
-        site_name = data.get('name')
-        site_location = data.get('location')
-        folder_link = data.get('folder_link')
-        folder_type = data.get('folder_type', 'GoogleDrive')
-        description = data.get('description', '')
-        site_id = data.get('site_id') or f"site_{uuid.uuid4().hex[:8]}"
-        
+        print(f"[/api/sites POST] user_email={user_email}", flush=True)
+
+        data = request.json or {}
+        site_name     = (data.get('name') or '').strip()
+        site_location = (data.get('location') or '').strip()
+        folder_link   = (data.get('folder_link') or '').strip()
+        folder_type   = (data.get('folder_type') or 'GoogleDrive').strip()
+        description   = (data.get('description') or '').strip()
+        site_id       = data.get('site_id') or f"site_{uuid.uuid4().hex[:8]}"
+
+        print(f"[/api/sites POST] payload site_id={site_id} name='{site_name}' "
+              f"location='{site_location}' folder_type='{folder_type}' "
+              f"folder_link(len)={len(folder_link)}", flush=True)
+
+        # Validation
         if not site_name:
             return jsonify({'error': 'Site name is required'}), 400
         if not site_location:
             return jsonify({'error': 'Site location is required'}), 400
         if not folder_link:
             return jsonify({'error': 'Folder link is required'}), 400
-        
-        # Generate QR code
+
+        # ---------- QR CODE BUILD (robust) ----------
+        os.makedirs(QR_CODES_DIR, exist_ok=True)
+        print(f"[/api/sites POST] ensured QR_CODES_DIR={QR_CODES_DIR}", flush=True)
+
         qr = qrcode.QRCode(
             version=1,
             error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -1281,52 +1352,125 @@ def create_site():
         )
         qr.add_data(folder_link)
         qr.make(fit=True)
-        
-        # Create an image from the QR Code
-        img = qr.make_image(fill_color="black", back_color="white")
-        
-        # Add site information at the bottom
-        width, height = img.size
-        new_height = height + 60  # Add space for text
-        new_img = Image.new('RGB', (width, new_height), color='white')
-        new_img.paste(img, (0, 0))
-        
-        # Add text
-        draw = ImageDraw.Draw(new_img)
-        try:
-            font = ImageFont.truetype("Arial", 16)
-        except IOError:
+
+        qr_img = qr.make_image(fill_color="black", back_color="white")
+        # Unwrap to real PIL.Image and force RGB to satisfy .paste()
+        if hasattr(qr_img, "get_image"):
+            qr_img = qr_img.get_image()
+        qr_img = qr_img.convert("RGB")
+
+        qr_w, qr_h = qr_img.size
+        print(f"[/api/sites POST] qr_img size={qr_w}x{qr_h} mode={qr_img.mode}", flush=True)
+
+        # ---------- FONT ----------
+        font = None
+        tried = []
+        for candidate in ["DejaVuSans.ttf", "Arial.ttf", "Arial"]:
+            try:
+                font = ImageFont.truetype(candidate, 16)
+                print(f"[/api/sites POST] using font='{candidate}'", flush=True)
+                break
+            except Exception:
+                tried.append(candidate)
+        if font is None:
             font = ImageFont.load_default()
-        
-        draw.text((10, height + 5), site_name, fill="black", font=font)
-        draw.text((10, height + 30), site_location, fill="black", font=font)
-        
-        # Save to a file
+            print(f"[/api/sites POST] fallback default font; tried={tried}", flush=True)
+
+        # ---------- TEXT WRAP/MEASURE ----------
+        def wrap_text(draw, text, max_width, font):
+            if not text:
+                return []
+            words = text.split()
+            lines, cur = [], []
+            for w in words:
+                test = (" ".join(cur + [w])).strip()
+                bbox = draw.textbbox((0, 0), test, font=font)
+                width = bbox[2] - bbox[0]
+                if width <= max_width or not cur:
+                    cur.append(w)
+                else:
+                    lines.append(" ".join(cur))
+                    cur = [w]
+            if cur:
+                lines.append(" ".join(cur))
+            return lines
+
+        tmp = Image.new("RGB", (qr_w, qr_h), "white")
+        tmp_draw = ImageDraw.Draw(tmp)
+        text_max_w = qr_w - 20  # 10px side padding
+
+        name_lines = wrap_text(tmp_draw, site_name, text_max_w, font)
+        loc_lines  = wrap_text(tmp_draw, site_location, text_max_w, font)
+
+        def line_h(d, font):
+            bbox = d.textbbox((0, 0), "Ag", font=font)
+            return (bbox[3] - bbox[1]) or 16
+
+        lh = line_h(tmp_draw, font)
+        pad_top = 10
+        gap = 6
+        block_gap = 12 if (name_lines and loc_lines) else 0
+        text_h = (pad_top
+                  + len(name_lines) * (lh + gap)
+                  + (block_gap if (name_lines and loc_lines) else 0)
+                  + len(loc_lines) * (lh + gap)
+                  + 10)  # bottom pad
+
+        new_h = qr_h + max(60, text_h)
+        out = Image.new("RGB", (qr_w, new_h), "white")
+        print(f"[/api/sites POST] canvas size={qr_w}x{new_h}", flush=True)
+
+        # Paste QR (real PIL image)
+        out.paste(qr_img, (0, 0))
+        print("[/api/sites POST] pasted QR to canvas", flush=True)
+
+        draw = ImageDraw.Draw(out)
+        cursor_y = qr_h + pad_top
+
+        def draw_centered(lines):
+            nonlocal cursor_y
+            for line in lines:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                w = bbox[2] - bbox[0]
+                x = max(10, (qr_w - w) // 2)
+                draw.text((x, cursor_y), line, fill="black", font=font)
+                cursor_y += lh + gap
+
+        if name_lines:
+            draw_centered(name_lines)
+        if name_lines and loc_lines:
+            cursor_y += max(0, block_gap - gap)
+        if loc_lines:
+            draw_centered(loc_lines)
+
         qr_id = f"qr_{uuid.uuid4().hex[:8]}"
         qr_filename = f"{qr_id}.png"
         qr_path = os.path.join(QR_CODES_DIR, qr_filename)
-        new_img.save(qr_path)
-        
-        # Create a public URL for the QR code
-        qr_url = f"{request.host_url}qrcodes/{qr_filename}"
-        
-        # Save to database
+        out.save(qr_path, format="PNG")
+        print(f"[/api/sites POST] saved PNG: {qr_path}", flush=True)
+
+        base = request.host_url if request.host_url.endswith("/") else (request.host_url + "/")
+        qr_url = f"{base}qrcodes/{qr_filename}"
+        print(f"[/api/sites POST] qr_url={qr_url}", flush=True)
+
+        # ---------- DB WRITE ----------
         conn = get_db_connection()
         if conn is None:
+            print("[/api/sites POST] DB connection failed", flush=True)
             return jsonify({'error': 'Database connection failed'}), 500
-        
+
         cursor = conn.cursor()
         now = datetime.now().isoformat()
-        
         cursor.execute('''
-        INSERT INTO sites (id, name, location, folder_type, folder_link, description, qr_url, qr_id, created_at, updated_at, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (site_id, site_name, site_location, folder_type, folder_link, description, qr_url, qr_id, now, now, user_email))
-        
+            INSERT INTO sites (id, name, location, folder_type, folder_link, description,
+                               qr_url, qr_id, created_at, updated_at, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (site_id, site_name, site_location, folder_type, folder_link, description,
+              qr_url, qr_id, now, now, user_email))
         conn.commit()
         conn.close()
-        
-        # Return the created site
+        print(f"[/api/sites POST] DB insert ok: site_id={site_id}", flush=True)
+
         new_site = {
             'id': site_id,
             'name': site_name,
@@ -1340,22 +1484,25 @@ def create_site():
             'updated_at': now,
             'created_by': user_email
         }
-        
-        # Log to Splunk if configured
-        send_to_splunk({
-            'action': 'site_created',
-            'site_id': site_id,
-            'site_name': site_name,
-            'user': user_email,
-            'timestamp': now
-        })
-        
+
+        try:
+            send_to_splunk({
+                'action': 'site_created',
+                'site_id': site_id,
+                'site_name': site_name,
+                'user': user_email,
+                'timestamp': now
+            })
+        except Exception as e:
+            print(f"[/api/sites POST] Splunk log failed: {e}", flush=True)
+
+        print("[/api/sites POST] success", flush=True)
         return jsonify(new_site)
-    
+
     except Exception as e:
-        print(f"Error creating site: {e}")
-        print(traceback.format_exc())
-        return jsonify({'error': str(e)}), 500
+        print(f"[/api/sites POST] ERROR: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        return jsonify({'error': 'Failed to create site', 'details': str(e)}), 500
 
 @app.route('/api/sites/<site_id>', methods=['PUT'])
 def update_site(site_id):

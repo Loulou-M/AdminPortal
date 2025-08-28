@@ -23,3 +23,41 @@ service-account-key.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Flask session & runtime
+flask_session/
+instance/
+*.pid
+
+# Local env & secrets
+.env
+.env.*
+client_secret.json
+service-account-key.json
+
+# Databases / caches / coverage
+*.sqlite3
+*.db
+sites.db
+.cache/
+.coverage
+pytest_cache/
+.coverage.*
+
+# Frontend
+node_modules/
+dist/
+build/
+*.log
+
+# Mac / IDEs
+.DS_Store
+.idea/
+.vscode/
