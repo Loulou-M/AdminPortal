@@ -1,9 +1,9 @@
 // FileUpload.jsx
 // File Upload Component for Admin Portal
 
-import React, { useState, useRef } from 'react';
-import { createFile } from '../../services/drive.service';
-import { saveToStorage, loadFromStorage } from '../../utils/storage';
+import React, { useState, useRef, useEffect } from 'react';
+import { createFile, uploadFile } from '../../services/drive.service';
+import { checkAuthStatus, redirectToAuth } from '../../services/auth.service';
 
 const FileUpload = ({ folderId, onUploadComplete }) => {
   const [file, setFile] = useState(null);
@@ -11,10 +11,36 @@ const FileUpload = ({ folderId, onUploadComplete }) => {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const fileInputRef = useRef(null);
 
-  // Load previously selected folder from storage
-  const lastFolderId = loadFromStorage('last_folder_id', folderId);
+  // Extract folder ID from Google Drive URL
+  const extractFolderId = (urlOrId) => {
+    if (!urlOrId) return '';
+    
+    // If it's already just an ID (no slashes or special chars except dash/underscore)
+    if (/^[a-zA-Z0-9_-]+$/.test(urlOrId)) {
+      return urlOrId;
+    }
+    
+    // Try to extract ID from various Google Drive URL formats
+    const match = urlOrId.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    if (match && match[1]) {
+      return match[1];
+    }
+    
+    return urlOrId; // Return as-is if we couldn't extract anything
+  };
+
+  // Check authentication on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      const isAuthed = await checkAuthStatus();
+      setIsAuthenticated(isAuthed);
+    };
+    
+    checkAuth();
+  }, []);
 
   // Handle file selection
   const handleFileChange = (e) => {
@@ -27,12 +53,20 @@ const FileUpload = ({ folderId, onUploadComplete }) => {
 
   // Upload file to Google Drive
   const handleUpload = async () => {
+    if (!isAuthenticated) {
+      redirectToAuth();
+      return;
+    }
+    
     if (!file) {
       setError('Please select a file to upload.');
       return;
     }
 
-    if (!folderId) {
+    // Extract the folder ID if it's a full URL
+    const cleanFolderId = extractFolderId(folderId);
+    
+    if (!cleanFolderId) {
       setError('No folder selected. Please select a destination folder.');
       return;
     }
@@ -43,51 +77,101 @@ const FileUpload = ({ folderId, onUploadComplete }) => {
       setError(null);
       setSuccess(false);
 
-      // Save folder ID for future uploads
-      saveToStorage('last_folder_id', folderId);
-
-      // Read file content
-      const fileContent = await readFileAsArrayBuffer(file);
-      setProgress(40);
-
-      // Upload file to Google Drive
-      const uploadedFile = await createFile({
-        name: file.name,
-        mimeType: file.type || 'application/octet-stream',
-        parents: [folderId],
-        content: new Blob([fileContent], { type: file.type || 'application/octet-stream' })
-      });
-
-      setProgress(100);
-      setSuccess(true);
-      
-      // Reset file input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = null;
-      }
-      setFile(null);
-
-      // Notify parent component
-      if (onUploadComplete) {
-        onUploadComplete(uploadedFile);
+      // Method 1: For small text files, use createFile
+      if (file.size < 1024 * 1024 && (
+          file.type === 'text/plain' || 
+          file.type === 'application/json' ||
+          file.type === 'text/html' ||
+          file.type === 'text/css'
+      )) {
+        // Read file content as text
+        const fileContent = await readFileAsText(file);
+        setProgress(40);
+        
+        console.log(`Uploading text file to folder ID: ${cleanFolderId}`);
+        
+        // Upload file using text content
+        const uploadedFile = await createFile({
+          name: file.name,
+          mimeType: file.type || 'text/plain',
+          parents: [cleanFolderId],
+          content: fileContent
+        });
+        
+        setProgress(100);
+        handleUploadSuccess(uploadedFile);
+      } 
+      // Method 2: For binary or larger files, use FormData upload
+      else {
+        setProgress(30);
+        console.log(`Uploading binary file to folder ID: ${cleanFolderId}`);
+        
+        // Upload using FormData (multipart/form-data)
+        const uploadedFile = await uploadFile({
+          file: file,
+          folderId: cleanFolderId
+        });
+        
+        setProgress(100);
+        handleUploadSuccess(uploadedFile);
       }
     } catch (error) {
       console.error('Error uploading file:', error);
-      setError(`Failed to upload file: ${error.message || 'Unknown error'}`);
+      
+      // Handle auth errors
+      if (error.message.includes('Authentication required')) {
+        setError('Please sign in to upload files');
+      } else {
+        setError(`Failed to upload file: ${error.message || 'Unknown error'}`);
+      }
     } finally {
       setIsUploading(false);
     }
   };
+  
+  // Handle successful upload
+  const handleUploadSuccess = (uploadedFile) => {
+    setSuccess(true);
+    
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = null;
+    }
+    setFile(null);
 
-  // Helper function to read file as ArrayBuffer
-  const readFileAsArrayBuffer = (file) => {
+    // Notify parent component
+    if (onUploadComplete) {
+      onUploadComplete(uploadedFile);
+    }
+  };
+
+  // Helper function to read file as text
+  const readFileAsText = (file) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
-      reader.onerror = (error) => reject(error);
-      reader.readAsArrayBuffer(file);
+      reader.onerror = reject;
+      reader.readAsText(file);
     });
   };
+
+  // If not authenticated, show login prompt
+  if (!isAuthenticated) {
+    return (
+      <div className="file-upload">
+        <h3>Upload Document</h3>
+        <div className="auth-required">
+          <p>Please sign in with Google to upload files</p>
+          <button 
+            onClick={() => redirectToAuth()}
+            className="sign-in-button"
+          >
+            Sign in with Google
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="file-upload">

@@ -2,28 +2,14 @@
 // Site Form Component for Admin Portal
 import React, { useState, useEffect } from 'react';
 import { createSite } from '../../services/site.service';
-import { loadFromStorage, saveToStorage } from '../../utils/storage';
-
-// Mock function for QR code generation
-// In a real app, this would call your backend to generate a QR code
-const generateQRCode = async (siteData) => {
-  // This is a placeholder for the actual backend API call
-  // In a real implementation, you would make a fetch request to your backend API
-  console.log('Generating QR code for site:', siteData);
-  
-  // For demo purposes, we'll simulate a response after a delay
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      // Generate a mock QR code URL (in a real app, this would be from backend)
-      resolve({
-        qr_url: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(siteData.folder_link)}`,
-        qr_id: `site_${Date.now()}`
-      });
-    }, 1000);
-  });
-};
+import { checkAuthStatus, redirectToAuth } from '../../services/auth.service';
 
 const SiteForm = ({ onSaveComplete }) => {
+  // Authentication state
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  // Form state
   const [formData, setFormData] = useState({
     site_id: '',
     name: '',
@@ -37,18 +23,26 @@ const SiteForm = ({ onSaveComplete }) => {
   const [qrCode, setQrCode] = useState(null);
   const [isSaved, setIsSaved] = useState(false);
 
-  // Load draft from localStorage
+  // Check authentication on mount
   useEffect(() => {
-    const savedDraft = loadFromStorage('site_form_draft');
-    if (savedDraft) {
-      setFormData(savedDraft);
-    }
+    const checkAuth = async () => {
+      try {
+        const isAuthed = await checkAuthStatus();
+        setIsAuthenticated(isAuthed);
+        
+        // If not authenticated, redirect to login
+        if (!isAuthed) {
+          redirectToAuth();
+        }
+      } catch (err) {
+        console.error('Error checking auth status:', err);
+      } finally {
+        setAuthChecked(true);
+      }
+    };
+    
+    checkAuth();
   }, []);
-
-  // Save draft to localStorage when formData changes
-  useEffect(() => {
-    saveToStorage('site_form_draft', formData);
-  }, [formData]);
 
   // Handle form field changes
   const handleChange = (e) => {
@@ -76,6 +70,12 @@ const SiteForm = ({ onSaveComplete }) => {
   // Handle form submission
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    // Check if authenticated
+    if (!isAuthenticated) {
+      redirectToAuth();
+      return;
+    }
     
     try {
       setIsLoading(true);
@@ -117,15 +117,19 @@ const SiteForm = ({ onSaveComplete }) => {
       // Set saved state
       setIsSaved(true);
       
-      // Clear draft from localStorage on successful save
-      saveToStorage('site_form_draft', null);
-      
       // Notify parent component
       if (onSaveComplete) {
         onSaveComplete(newSite);
       }
     } catch (error) {
       console.error('Error creating site:', error);
+      
+      // If authentication error, redirect to login
+      if (error.message && error.message.includes('Authentication required')) {
+        redirectToAuth();
+        return;
+      }
+      
       setError(error.message || 'Failed to create site');
     } finally {
       setIsLoading(false);
@@ -158,9 +162,29 @@ const SiteForm = ({ onSaveComplete }) => {
       setQrCode(null);
       setIsSaved(false);
       setError(null);
-      saveToStorage('site_form_draft', null);
     }
   };
+
+  // If still checking authentication, show loading
+  if (!authChecked) {
+    return <div className="loading">Checking authentication...</div>;
+  }
+
+  // If not authenticated, show login message (though redirectToAuth should handle this)
+  if (!isAuthenticated) {
+    return (
+      <div className="auth-required">
+        <h3>Authentication Required</h3>
+        <p>Please sign in to access this feature.</p>
+        <button 
+          onClick={() => redirectToAuth()}
+          className="sign-in-button"
+        >
+          Sign in with Google
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="site-form">

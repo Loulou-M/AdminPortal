@@ -1,7 +1,67 @@
 // drive.service.js
-// Google Drive API Service for Admin Portal
+// Google Drive API Service for Admin Portal (Using Backend API)
 
-import { getValidAccessToken } from './auth.service';
+// API base URL - adjust this to your actual backend URL
+const API_BASE_URL = 'http://localhost:5000';
+
+/**
+ * Helper function for making authenticated API requests
+ * @param {string} url - The URL to fetch
+ * @param {Object} options - Fetch options
+ * @returns {Promise<any>} Promise that resolves with the response data
+ */
+async function fetchWithAuth(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    credentials: 'include', // Important for sending cookies/session
+    headers: {
+      ...options.headers,
+      'Content-Type': 'application/json'
+    }
+  });
+  
+  if (!response.ok) {
+    // For 401 errors, redirect to authentication
+    if (response.status === 401) {
+      // Store the current URL to redirect back after auth
+      localStorage.setItem('auth_redirect', window.location.pathname);
+      
+      // Redirect to auth endpoint
+      window.location.href = `${API_BASE_URL}/auth/google`;
+      
+      // Throw a friendly error
+      throw new Error('Authentication required. Redirecting to login...');
+    }
+    
+    // For other errors, try to parse error response
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `API error: ${response.status} ${response.statusText}`);
+  }
+  
+  return response.json();
+}
+
+/**
+ * Extract folder ID from Google Drive URL
+ * @param {string} urlOrId - Folder URL or ID
+ * @returns {string} Extracted folder ID
+ */
+const extractFolderId = (urlOrId) => {
+  if (!urlOrId) return '';
+  
+  // If it's already just an ID (no slashes or special chars except dash/underscore)
+  if (/^[a-zA-Z0-9_-]+$/.test(urlOrId)) {
+    return urlOrId;
+  }
+  
+  // Try to extract ID from various Google Drive URL formats
+  const match = urlOrId.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  
+  return urlOrId; // Return as-is if we couldn't extract anything
+};
 
 /**
  * List files in Google Drive
@@ -14,32 +74,23 @@ import { getValidAccessToken } from './auth.service';
  */
 export const listFiles = async (options = {}) => {
   const {
-    folderId,
+    folderId: rawFolderId,
     query = '',
     pageSize = 30,
-    fields = "files(id,name,mimeType,createdTime,modifiedTime,webViewLink)"
+    fields = "files(id,name,mimeType,createdTime,modifiedTime,webViewLink,size)"
   } = options;
 
+  // Extract proper folder ID if it's a URL
+  const folderId = extractFolderId(rawFolderId);
+
   try {
-    // Build the query
-    let queryString = '';
-    if (folderId) {
-      queryString = `'${folderId}' in parents`;
-      if (query) {
-        queryString += ` and ${query}`;
-      }
-    } else if (query) {
-      queryString = query;
-    }
+    const params = new URLSearchParams();
+    if (folderId) params.append('folderId', folderId);
+    if (query) params.append('query', query);
+    if (pageSize) params.append('pageSize', pageSize);
+    if (fields) params.append('fields', fields);
 
-    const response = await window.gapi.client.drive.files.list({
-      q: queryString,
-      pageSize,
-      fields,
-      orderBy: 'modifiedTime desc'
-    });
-
-    return response.result.files || [];
+    return await fetchWithAuth(`${API_BASE_URL}/api/files?${params.toString()}`);
   } catch (error) {
     console.error('Error listing files:', error);
     throw error;
@@ -54,12 +105,10 @@ export const listFiles = async (options = {}) => {
  */
 export const getFile = async (fileId, fields = "id,name,mimeType,createdTime,modifiedTime,webViewLink,parents") => {
   try {
-    const response = await window.gapi.client.drive.files.get({
-      fileId,
-      fields
-    });
+    const params = new URLSearchParams();
+    if (fields) params.append('fields', fields);
     
-    return response.result;
+    return await fetchWithAuth(`${API_BASE_URL}/api/files/${fileId}?${params.toString()}`);
   } catch (error) {
     console.error('Error getting file:', error);
     throw error;
@@ -73,25 +122,25 @@ export const getFile = async (fileId, fields = "id,name,mimeType,createdTime,mod
  */
 export const getFileContent = async (fileId) => {
   try {
-    // Get a valid access token
-    const accessToken = await getValidAccessToken();
-    
-    // Fetch the file content directly (not through gapi client)
-    const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`
-      }
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Failed to get file content: ${response.statusText}`);
-    }
-    
-    return await response.text();
+    return await fetchWithAuth(`${API_BASE_URL}/api/files/${fileId}/content`);
   } catch (error) {
     console.error('Error getting file content:', error);
     throw error;
   }
+};
+
+/**
+ * Convert Blob to base64
+ * @param {Blob} blob - The blob to convert
+ * @returns {Promise<string>} Promise that resolves with base64 string
+ */
+const blobToBase64 = (blob) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 };
 
 /**
@@ -107,51 +156,80 @@ export const createFile = async (options) => {
   const {
     name,
     mimeType = "text/plain",
-    parents = [],
+    parents: rawParents = [],
     content
   } = options;
   
+  // Process parents to extract IDs if they're URLs
+  let parents;
+  if (Array.isArray(rawParents)) {
+    parents = rawParents.map(extractFolderId);
+  } else {
+    parents = [extractFolderId(rawParents)];
+  }
+  
   try {
-    // Get a valid access token
-    const accessToken = await getValidAccessToken();
+    // Handle different content types
+    let contentToSend = content;
     
-    // Prepare file metadata
-    const metadata = {
-      name,
-      mimeType
-    };
-    
-    // Add parents if specified
-    if (parents.length > 0) {
-      metadata.parents = Array.isArray(parents) ? parents : [parents];
+    // Convert Blob to base64 if needed
+    if (content instanceof Blob) {
+      contentToSend = await blobToBase64(content);
     }
     
-    // Create form data for multipart upload
-    const form = new FormData();
-    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-    
-    // Add content as blob
-    const contentBlob = content instanceof Blob 
-      ? content 
-      : new Blob([content], { type: mimeType });
-    form.append('file', contentBlob);
-    
-    // Upload file
-    const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    return await fetchWithAuth(`${API_BASE_URL}/api/files`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`
-      },
-      body: form
+      body: JSON.stringify({
+        name,
+        mimeType,
+        parents,
+        content: contentToSend
+      })
+    });
+  } catch (error) {
+    console.error('Error creating file:', error);
+    throw error;
+  }
+};
+
+/**
+ * Upload a file using FormData (for binary files)
+ * @param {Object} options - Upload options
+ * @param {File} options.file - The file to upload
+ * @param {string} options.folderId - Parent folder ID
+ * @returns {Promise<Object>} Promise that resolves with the uploaded file metadata
+ */
+export const uploadFile = async (options) => {
+  const { file, folderId: rawFolderId } = options;
+  
+  // Extract proper folder ID
+  const folderId = extractFolderId(rawFolderId);
+  
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('folder', folderId);
+    
+    const response = await fetch(`${API_BASE_URL}/api/files/upload`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData
     });
     
     if (!response.ok) {
-      throw new Error(`Failed to create file: ${response.statusText}`);
+      if (response.status === 401) {
+        localStorage.setItem('auth_redirect', window.location.pathname);
+        window.location.href = `${API_BASE_URL}/auth/google`;
+        throw new Error('Authentication required. Redirecting to login...');
+      }
+      
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `API error: ${response.status} ${response.statusText}`);
     }
     
     return await response.json();
   } catch (error) {
-    console.error('Error creating file:', error);
+    console.error('Error uploading file:', error);
     throw error;
   }
 };
@@ -174,41 +252,22 @@ export const updateFile = async (options) => {
   } = options;
   
   try {
-    // Get a valid access token
-    const accessToken = await getValidAccessToken();
+    // Handle different content types
+    let contentToSend = content;
     
-    // Update metadata if name is provided
-    if (name) {
-      await window.gapi.client.drive.files.update({
-        fileId,
-        resource: { name }
-      });
+    // Convert Blob to base64 if needed
+    if (content instanceof Blob) {
+      contentToSend = await blobToBase64(content);
     }
     
-    // Update content if provided
-    if (content) {
-      const contentBlob = content instanceof Blob 
-        ? content 
-        : new Blob([content], { type: mimeType });
-      
-      const response = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
-        method: 'PATCH',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': mimeType
-        },
-        body: contentBlob
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to update file content: ${response.statusText}`);
-      }
-      
-      return await response.json();
-    }
-    
-    // If only metadata was updated, return the file info
-    return await getFile(fileId);
+    return await fetchWithAuth(`${API_BASE_URL}/api/files/${fileId}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name,
+        content: contentToSend,
+        mimeType
+      })
+    });
   } catch (error) {
     console.error('Error updating file:', error);
     throw error;
@@ -222,11 +281,9 @@ export const updateFile = async (options) => {
  */
 export const deleteFile = async (fileId) => {
   try {
-    await window.gapi.client.drive.files.delete({
-      fileId
+    return await fetchWithAuth(`${API_BASE_URL}/api/files/${fileId}`, {
+      method: 'DELETE'
     });
-    
-    return true;
   } catch (error) {
     console.error('Error deleting file:', error);
     throw error;
@@ -256,25 +313,25 @@ export const searchFiles = async (query, pageSize = 30) => {
 export const createFolder = async (options) => {
   const {
     name,
-    parents = []
+    parents: rawParents = []
   } = options;
   
+  // Process parents to extract IDs if they're URLs
+  let parents;
+  if (Array.isArray(rawParents)) {
+    parents = rawParents.map(extractFolderId);
+  } else {
+    parents = [extractFolderId(rawParents)];
+  }
+  
   try {
-    const metadata = {
-      name,
-      mimeType: 'application/vnd.google-apps.folder'
-    };
-    
-    if (parents.length > 0) {
-      metadata.parents = Array.isArray(parents) ? parents : [parents];
-    }
-    
-    const response = await window.gapi.client.drive.files.create({
-      resource: metadata,
-      fields: 'id,name,mimeType,createdTime,webViewLink'
+    return await fetchWithAuth(`${API_BASE_URL}/api/folders`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        parents
+      })
     });
-    
-    return response.result;
   } catch (error) {
     console.error('Error creating folder:', error);
     throw error;
@@ -290,19 +347,16 @@ export const createFolder = async (options) => {
  */
 export const createShareableLink = async (fileId, role = "reader", type = "anyone") => {
   try {
-    // Create permission
-    await window.gapi.client.drive.permissions.create({
-      fileId,
-      resource: {
+    const result = await fetchWithAuth(`${API_BASE_URL}/api/share`, {
+      method: 'POST',
+      body: JSON.stringify({
+        fileId,
         role,
         type
-      }
+      })
     });
     
-    // Get the file with webViewLink
-    const file = await getFile(fileId, "webViewLink");
-    
-    return file.webViewLink;
+    return result.link;
   } catch (error) {
     console.error('Error creating shareable link:', error);
     throw error;

@@ -1,60 +1,37 @@
 // templates.service.js
-// Service for managing inspection templates in Google Drive
+// Service for managing inspection templates (Using Backend API)
 
-import { createFile, updateFile, deleteFile, listFiles, getFileContent } from './drive.service';
-import { generateTemplatePDF } from '../utils/pdf';
+// API base URL
+const API_BASE_URL = process.env.REACT_APP_API_BASE || 'http://localhost:5000';
 
-// Default templates folder ID - replace with your actual folder ID for templates
-const TEMPLATES_FOLDER_ID = '1idfXbARgPMcHtniXwLtCQf3c-34rQMIY';
+// templates.service.js - Update these functions
 
 /**
- * Get all templates from the templates folder
+ * Get all templates
  * @returns {Promise<Array>} Promise that resolves with templates array
  */
 export const getTemplates = async () => {
   try {
     console.log('templates.service: Getting all templates...');
-
-    // Get all JSON files in the templates folder
-    const files = await listFiles({
-      folderId: TEMPLATES_FOLDER_ID,
-      query: "mimeType='application/json'"
+    
+    const response = await fetch(`${API_BASE_URL}/api/templates`, {
+      credentials: 'include' // Add this
     });
-
-    console.log(`templates.service: Found ${files.length} template files`);
-
-    // Fetch content for each template file
-    const templates = await Promise.all(
-      files.map(async (file) => {
-        try {
-          const content = await getFileContent(file.id);
-          const template = JSON.parse(content);
-
-          // Find matching PDF by name prefix
-          const pdfFiles = await listFiles({
-            folderId: TEMPLATES_FOLDER_ID,
-            query: `name contains '${template.name}' and mimeType='application/pdf'`
-          });
-
-          const pdfFile = pdfFiles.length > 0 ? pdfFiles[0] : null;
-
-          return {
-            ...template,
-            fileId: file.id,
-            fileName: file.name,
-            pdfFileId: pdfFile ? pdfFile.id : null,
-            pdfFileName: pdfFile ? pdfFile.name : null,
-            createdTime: file.createdTime,
-            modifiedTime: file.modifiedTime
-          };
-        } catch (error) {
-          console.warn(`templates.service: Failed to parse template ${file.name}:`, error);
-          return null;
-        }
-      })
-    );
-
-    return templates.filter(template => template !== null);
+    
+    if (!response.ok) {
+      // Handle 401 Unauthorized
+      if (response.status === 401) {
+        throw new Error('Authentication required. Please sign in.');
+      }
+      
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Failed to fetch templates');
+    }
+    
+    const templates = await response.json();
+    console.log(`templates.service: Found ${templates.length} templates`);
+    
+    return templates;
   } catch (error) {
     console.error('templates.service: Error fetching templates:', error);
     throw error;
@@ -69,24 +46,22 @@ export const getTemplates = async () => {
 export const getTemplate = async (templateId) => {
   try {
     console.log(`templates.service: Getting template with ID ${templateId}`);
-
-    const content = await getFileContent(templateId);
-    const template = JSON.parse(content);
-
-    // Find matching PDF
-    const pdfFiles = await listFiles({
-      folderId: TEMPLATES_FOLDER_ID,
-      query: `name contains '${template.name}' and mimeType='application/pdf'`
+    
+    const response = await fetch(`${API_BASE_URL}/api/templates/${templateId}`, {
+      credentials: 'include' // Add this
     });
-
-    const pdfFile = pdfFiles.length > 0 ? pdfFiles[0] : null;
-
-    return {
-      ...template,
-      fileId: templateId,
-      pdfFileId: pdfFile ? pdfFile.id : null,
-      pdfFileName: pdfFile ? pdfFile.name : null
-    };
+    
+    if (!response.ok) {
+      // Handle 401 Unauthorized
+      if (response.status === 401) {
+        throw new Error('Authentication required. Please sign in.');
+      }
+      
+      const errorData = await response.json();
+      throw new Error(errorData.error || `Failed to fetch template ${templateId}`);
+    }
+    
+    return await response.json();
   } catch (error) {
     console.error(`templates.service: Error fetching template ${templateId}:`, error);
     throw error;
@@ -94,59 +69,43 @@ export const getTemplate = async (templateId) => {
 };
 
 /**
- * Create a new template (JSON + PDF)
+ * Create a new template
+ * @param {Object} templateData - Template data
+ * @returns {Promise<Object>} Promise that resolves with created template data
  */
 export const createTemplate = async (templateData) => {
   try {
     console.log('templates.service: Creating new template:', templateData.name);
-
-    const { name, category, description, questions } = templateData;
-
-    if (!name) throw new Error('Template name is required');
-    if (!questions || !Array.isArray(questions)) throw new Error('Questions must be an array');
-
-    // Create template object
-    const template = {
-      name,
-      category: category || 'General',
-      description: description || '',
-      questions: questions.filter(q => q.question && q.question.trim()),
-      status: 'Active',
-      version: '1.0',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-
-    // Save JSON
-    const jsonContent = JSON.stringify(template, null, 2);
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const jsonFileName = `${name}_${timestamp}.json`;
-
-    const jsonResult = await createFile({
-      name: jsonFileName,
-      mimeType: 'application/json',
-      parents: [TEMPLATES_FOLDER_ID],
-      content: jsonContent
+    
+    // Validate required fields
+    if (!templateData.name) throw new Error('Template name is required');
+    if (!templateData.questions || !Array.isArray(templateData.questions)) {
+      throw new Error('Questions must be an array');
+    }
+    
+    const response = await fetch(`${API_BASE_URL}/api/templates`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(templateData),
+      credentials: 'include' // Add this
     });
-
-    // Save PDF
-    const pdfBlob = generateTemplatePDF(template);
-    const pdfFile = new File([pdfBlob], `${name}.pdf`, { type: 'application/pdf' });
-
-    const pdfResult = await createFile({
-      name: pdfFile.name,
-      mimeType: 'application/pdf',
-      parents: [TEMPLATES_FOLDER_ID],
-      content: pdfFile
-    });
-
-    return {
-      ...template,
-      fileId: jsonResult.id,
-      fileName: jsonResult.name,
-      pdfFileId: pdfResult.id,
-      pdfFileName: pdfResult.name
-    };
+    
+    if (!response.ok) {
+      // Handle 401 Unauthorized
+      if (response.status === 401) {
+        throw new Error('Authentication required. Please sign in.');
+      }
+      
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Failed to create template');
+    }
+    
+    const newTemplate = await response.json();
+    console.log(`templates.service: Template created with ID ${newTemplate.fileId}`);
+    
+    return newTemplate;
   } catch (error) {
     console.error('templates.service: Error creating template:', error);
     throw error;
@@ -154,54 +113,37 @@ export const createTemplate = async (templateData) => {
 };
 
 /**
- * Update an existing template (updates JSON + replaces PDF)
+ * Update an existing template
+ * @param {string} templateId - Template file ID
+ * @param {Object} templateData - Updated template data
+ * @returns {Promise<Object>} Promise that resolves with updated template data
  */
 export const updateTemplate = async (templateId, templateData) => {
   try {
     console.log(`templates.service: Updating template with ID ${templateId}`);
-
-    const existingTemplate = await getTemplate(templateId);
-
-    const updatedTemplate = {
-      ...existingTemplate,
-      ...templateData,
-      updatedAt: new Date().toISOString(),
-      version: existingTemplate.version
-        ? incrementVersion(existingTemplate.version)
-        : '1.0'
-    };
-
-    const { fileId, pdfFileId, ...templateToSave } = updatedTemplate;
-
-    // Update JSON file
-    const jsonContent = JSON.stringify(templateToSave, null, 2);
-    await updateFile({
-      fileId: templateId,
-      content: jsonContent,
-      mimeType: 'application/json'
+    
+    const response = await fetch(`${API_BASE_URL}/api/templates/${templateId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(templateData),
+      credentials: 'include' // Add this
     });
-
-    // Update/replace PDF file
-    const pdfBlob = generateTemplatePDF(updatedTemplate);
-    const pdfFile = new File([pdfBlob], `${updatedTemplate.name}.pdf`, { type: 'application/pdf' });
-
-    if (pdfFileId) {
-      await updateFile({
-        fileId: pdfFileId,
-        content: pdfFile,
-        mimeType: 'application/pdf'
-      });
-    } else {
-      const pdfResult = await createFile({
-        name: pdfFile.name,
-        mimeType: 'application/pdf',
-        parents: [TEMPLATES_FOLDER_ID],
-        content: pdfFile
-      });
-      updatedTemplate.pdfFileId = pdfResult.id;
-      updatedTemplate.pdfFileName = pdfResult.name;
+    
+    if (!response.ok) {
+      // Handle 401 Unauthorized
+      if (response.status === 401) {
+        throw new Error('Authentication required. Please sign in.');
+      }
+      
+      const errorData = await response.json();
+      throw new Error(errorData.error || `Failed to update template ${templateId}`);
     }
-
+    
+    const updatedTemplate = await response.json();
+    console.log(`templates.service: Template updated successfully`);
+    
     return updatedTemplate;
   } catch (error) {
     console.error(`templates.service: Error updating template ${templateId}:`, error);
@@ -210,63 +152,34 @@ export const updateTemplate = async (templateId, templateData) => {
 };
 
 /**
- * Delete a template (JSON + PDF)
+ * Delete a template
+ * @param {string} templateId - Template file ID
+ * @returns {Promise<boolean>} Promise that resolves with true if successful
  */
 export const deleteTemplate = async (templateId) => {
   try {
     console.log(`templates.service: Deleting template with ID ${templateId}`);
-
-    const template = await getTemplate(templateId);
-
-    // Delete JSON
-    await deleteFile(templateId);
-
-    // Delete PDF if exists
-    if (template.pdfFileId) {
-      await deleteFile(template.pdfFileId);
+    
+    const response = await fetch(`${API_BASE_URL}/api/templates/${templateId}`, {
+      method: 'DELETE',
+      credentials: 'include' // Add this
+    });
+    
+    if (!response.ok) {
+      // Handle 401 Unauthorized
+      if (response.status === 401) {
+        throw new Error('Authentication required. Please sign in.');
+      }
+      
+      const errorData = await response.json();
+      throw new Error(errorData.error || `Failed to delete template ${templateId}`);
     }
-
-    console.log(`templates.service: Template and PDF deleted successfully`);
+    
+    console.log(`templates.service: Template deleted successfully`);
+    
     return true;
   } catch (error) {
     console.error(`templates.service: Error deleting template ${templateId}:`, error);
     throw error;
   }
 };
-
-/**
- * Upload a generic file (e.g., PDF) to the templates folder
- */
-export const uploadFile = async (file, mimeType = 'application/pdf') => {
-  try {
-    console.log('templates.service: Uploading file to Google Drive...');
-
-    const result = await createFile({
-      name: file.name,
-      mimeType,
-      parents: [TEMPLATES_FOLDER_ID],
-      content: file
-    });
-
-    console.log(`templates.service: File uploaded with ID ${result.id}`);
-    return result;
-  } catch (error) {
-    console.error('templates.service: Error uploading file:', error);
-    throw error;
-  }
-};
-
-/**
- * Helper function to increment version number (e.g., "v1.0" → "v1.1")
- */
-function incrementVersion(version) {
-  if (!version || typeof version !== 'string') return '1.0';
-
-  const versionMatch = version.match(/^v?(\d+)\.(\d+)$/);
-  if (!versionMatch) return '1.0';
-
-  const major = parseInt(versionMatch[1], 10);
-  const minor = parseInt(versionMatch[2], 10) + 1;
-
-  return version.startsWith('v') ? `v${major}.${minor}` : `${major}.${minor}`;
-}

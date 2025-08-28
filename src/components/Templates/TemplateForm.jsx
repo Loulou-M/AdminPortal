@@ -1,11 +1,17 @@
 // TemplateForm.jsx
-// Template Form Component for Admin Portal
+// Template Form Component for Admin Portal with PDF generation
 
 import React, { useState, useEffect } from 'react';
 import { createTemplate, updateTemplate, getTemplate } from '../../services/templates.service';
-import { saveToStorage, loadFromStorage } from '../../utils/storage';
+import { checkAuthStatus, redirectToAuth } from '../../services/auth.service';
+import { generateTemplatePDF } from '../../utils/pdf';
+import { createFile } from '../../services/drive.service';
 
 const TemplateForm = ({ templateId, onSave, onCancel }) => {
+  // Add authentication state
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  
   // Template state
   const [formData, setFormData] = useState({
     name: '',
@@ -19,27 +25,36 @@ const TemplateForm = ({ templateId, onSave, onCancel }) => {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
+  const [pdfGenerated, setPdfGenerated] = useState(false);
+
+  // Check authentication on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const isAuthed = await checkAuthStatus();
+        setIsAuthenticated(isAuthed);
+        
+        // If not authenticated, redirect to login
+        if (!isAuthed) {
+          redirectToAuth();
+        }
+      } catch (err) {
+        console.error('Error checking auth status:', err);
+      } finally {
+        setAuthChecked(true);
+      }
+    };
+    
+    checkAuth();
+  }, []);
 
   // If templateId is provided, load template data
   useEffect(() => {
-    if (templateId) {
+    if (templateId && isAuthenticated) {
       setIsEditing(true);
       loadTemplate(templateId);
-    } else {
-      // Try to load draft from localStorage
-      const savedDraft = loadFromStorage('template_draft');
-      if (savedDraft) {
-        setFormData(savedDraft);
-      }
     }
-  }, [templateId]);
-
-  // Save draft to localStorage when formData changes
-  useEffect(() => {
-    if (!isEditing) {
-      saveToStorage('template_draft', formData);
-    }
-  }, [formData, isEditing]);
+  }, [templateId, isAuthenticated]);
 
   // Load template data from Google Drive
   const loadTemplate = async (id) => {
@@ -59,6 +74,13 @@ const TemplateForm = ({ templateId, onSave, onCancel }) => {
       });
     } catch (error) {
       console.error('Error loading template:', error);
+      
+      // If authentication error, redirect to login
+      if (error.message && error.message.includes('Authentication required')) {
+        redirectToAuth();
+        return;
+      }
+      
       setError(`Failed to load template: ${error.message || 'Unknown error'}`);
     } finally {
       setIsLoading(false);
@@ -92,9 +114,89 @@ const TemplateForm = ({ templateId, onSave, onCancel }) => {
     setFormData({ ...formData, questions: updatedQuestions });
   };
 
+  // Generate PDF and upload to Drive
+  const generatePDF = async () => {
+    try {
+      setIsLoading(true);
+      
+      // Validate form data
+      if (!formData.name.trim()) {
+        setError('Template name is required to generate PDF');
+        setIsLoading(false);
+        return;
+      }
+      
+      // Generate PDF blob
+      const pdfBlob = generateTemplatePDF(formData);
+      
+      // Upload PDF to Drive
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const pdfName = `${formData.name}_${timestamp}.pdf`;
+      
+      // Get parent folder from template
+      let parentFolder = null;
+      if (templateId) {
+        try {
+          const template = await getTemplate(templateId);
+          if (template.parentFolderId) {
+            parentFolder = template.parentFolderId;
+          }
+        } catch (err) {
+          console.warn('Could not get parent folder from template:', err);
+        }
+      }
+      
+      // Create file in Drive
+      await createFile({
+        name: pdfName,
+        mimeType: 'application/pdf',
+        parents: parentFolder ? [parentFolder] : [],
+        content: pdfBlob
+      });
+      
+      setPdfGenerated(true);
+      setError(null);
+      
+      // Hide success message after 3 seconds
+      setTimeout(() => {
+        setPdfGenerated(false);
+      }, 3000);
+      
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      setError(`Failed to generate PDF: ${error.message || 'Unknown error'}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Discard changes
+  const handleDiscard = () => {
+    // Clear form data if creating new template
+    if (!isEditing) {
+      setFormData({
+        name: '',
+        category: '',
+        description: '',
+        questions: [{ question: '', type: 'text', required: false }]
+      });
+    }
+
+    // Call onCancel callback if provided
+    if (onCancel) {
+      onCancel();
+    }
+  };
+
   // Handle form submission
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    // Check if authenticated
+    if (!isAuthenticated) {
+      redirectToAuth();
+      return;
+    }
 
     // Validate form
     if (!formData.name.trim()) {
@@ -124,8 +226,26 @@ const TemplateForm = ({ templateId, onSave, onCancel }) => {
       } else {
         // Create new template
         result = await createTemplate(formData);
-        // Clear draft after successful save
-        saveToStorage('template_draft', null);
+      }
+      
+      // Also generate PDF
+      try {
+        const pdfBlob = generateTemplatePDF(formData);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const pdfName = `${formData.name}_${timestamp}.pdf`;
+        
+        // Upload PDF to Drive
+        await createFile({
+          name: pdfName,
+          mimeType: 'application/pdf',
+          parents: result.fileId ? [result.fileId] : [],
+          content: pdfBlob
+        });
+        
+        console.log('PDF generated and uploaded successfully');
+      } catch (pdfError) {
+        console.error('Error generating PDF:', pdfError);
+        // Don't fail the whole save if PDF generation fails
       }
 
       // Notify parent component
@@ -134,28 +254,36 @@ const TemplateForm = ({ templateId, onSave, onCancel }) => {
       }
     } catch (error) {
       console.error('Error saving template:', error);
+      
+      // If authentication error, redirect to login
+      if (error.message && error.message.includes('Authentication required')) {
+        redirectToAuth();
+        return;
+      }
+      
       setError(`Failed to save template: ${error.message || 'Unknown error'}`);
     } finally {
       setIsSaving(false);
     }
   };
 
-  // Discard changes
-  const handleDiscard = () => {
-    if (!isEditing) {
-      // Clear draft
-      saveToStorage('template_draft', null);
-    }
+  // If checking authentication or loading, show loading state
+  if (!authChecked || (templateId && isLoading && !error)) {
+    return <div className="loading">Loading...</div>;
+  }
 
-    if (onCancel) {
-      onCancel();
-    }
-  };
-
-  if (isLoading) {
+  // If not authenticated, show login message (though redirectToAuth should handle this)
+  if (!isAuthenticated) {
     return (
-      <div className="template-form loading">
-        <p>Loading template...</p>
+      <div className="auth-required">
+        <h3>Authentication Required</h3>
+        <p>Please sign in to access this feature.</p>
+        <button 
+          onClick={() => redirectToAuth()}
+          className="sign-in-button"
+        >
+          Sign in with Google
+        </button>
       </div>
     );
   }
@@ -168,6 +296,15 @@ const TemplateForm = ({ templateId, onSave, onCancel }) => {
         <div className="form-error">
           <p>{error}</p>
           <button onClick={() => setError(null)} className="dismiss-button">
+            Dismiss
+          </button>
+        </div>
+      )}
+      
+      {pdfGenerated && (
+        <div className="form-success">
+          <p>PDF generated and uploaded successfully</p>
+          <button onClick={() => setPdfGenerated(false)} className="dismiss-button">
             Dismiss
           </button>
         </div>
@@ -309,15 +446,24 @@ const TemplateForm = ({ templateId, onSave, onCancel }) => {
             type="button"
             onClick={handleDiscard}
             className="cancel-button"
-            disabled={isSaving}
+            disabled={isSaving || isLoading}
           >
             {isEditing ? 'Cancel' : 'Discard'}
+          </button>
+          
+          <button
+            type="button"
+            onClick={generatePDF}
+            className="pdf-button"
+            disabled={isSaving || isLoading || !formData.name.trim()}
+          >
+            Generate PDF
           </button>
 
           <button
             type="submit"
             className="save-button"
-            disabled={isSaving}
+            disabled={isSaving || isLoading}
           >
             {isSaving ? 'Saving...' : (isEditing ? 'Update Template' : 'Save Template')}
           </button>
