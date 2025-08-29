@@ -39,10 +39,11 @@ BACKEND_ORIGIN  = os.environ.get("BACKEND_ORIGIN",  "http://localhost:5000")
 # Use this in your OAuth Flow redirect_uri to avoid mismatches:
 GOOGLE_CALLBACK_URL = os.environ.get("GOOGLE_CALLBACK_URL", f"{BACKEND_ORIGIN}/auth/google/callback")
 CALLBACK_URL    = os.environ.get("GOOGLE_CALLBACK_URL", f"{BACKEND_ORIGIN}/auth/google/callback")
-# CORS: allow credentialed requests from the React dev server
+
+# CORS: allow specific origins with credentials
 CORS(
     app,
-    resources={r"/*": {"origins": [FRONTEND_ORIGIN]}},
+    resources={r"/*": {"origins": ["http://localhost:8001", "http://localhost:3000", "http://localhost:5000"]}},
     supports_credentials=True,
     allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -54,6 +55,7 @@ app.config.update(
     SESSION_COOKIE_SECURE=False,      # Keep False for development
     SESSION_COOKIE_HTTPONLY=True,     # Add this for better security
 )
+
 
 # ==== APP CONFIG (unchanged below, keep using these) ====
 CLIENT_SECRETS_FILE = os.environ.get('CLIENT_SECRETS_FILE', 'client_secret.json')
