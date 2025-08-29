@@ -207,7 +207,7 @@ const IntegrationTest = () => {
         return (
           <div className="test-component auth-test">
             <h2>Authentication</h2>
-            <p>Test Google authentication by signing in/out.</p>
+            <p> Google authentication by signing in/out.</p>
             <GoogleAuth onAuthChange={handleAuthChange} />
           </div>
         );
@@ -397,8 +397,8 @@ const IntegrationTest = () => {
       default:
         return (
           <div className="test-component initial-state">
-            <h2>Welcome to the Integration Test Console</h2>
-            <p>Select a component from the navigation to begin testing its functionality with the Google Drive API.</p>
+            <h2>Welcome to the Integration Console</h2>
+            <p>Select a component from the navigation to begin utilizing the drve and its functionality with the Google Drive API.</p>
             <p>Current Status: <strong>{authenticated ? 'Signed In' : 'Signed Out'}</strong></p>
           </div>
         );
