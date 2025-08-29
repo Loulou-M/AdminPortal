@@ -600,57 +600,105 @@ def get_file_content(file_id):
 
 @app.route('/api/files', methods=['POST'])
 def create_file():
-    """Create a new file in Google Drive"""
+    """Create a new file in Google Drive (supports text, bytes, base64, data URLs, or fetch by URL)"""
+    print("[/api/files POST] start", flush=True)
+
     credentials = get_credentials()
     if not credentials:
+        print("[/api/files POST] no credentials in session", flush=True)
         return jsonify({'error': 'Authentication required. Please sign in.'}), 401
-    
+
     try:
         drive_service = get_drive_service()
-        data = request.json
-        name = data.get('name')
-        mime_type = data.get('mimeType', 'text/plain')
-        parents = data.get('parents', [])
-        content = data.get('content', '')
-        
+        data = request.get_json(silent=True, force=True) or {}
+
+        name      = (data.get('name') or '').strip()
+        mime_type = (data.get('mimeType') or 'application/octet-stream').strip()
+        parents   = data.get('parents') or []
+
+        # possible payloads
+        content         = data.get('content', None)                # string or bytes
+        content_base64  = data.get('contentBase64') or data.get('content_base64')
+        data_url        = data.get('dataUrl') or data.get('data_url')
+        remote_url      = data.get('url')
+
+        print(f"[/api/files POST] name='{name}' mime='{mime_type}' parents={parents}", flush=True)
+        print(f"[/api/files POST] payload keys={list(data.keys())}", flush=True)
+
         if not name:
             return jsonify({'error': 'File name is required'}), 400
-        
-        # Create a temporary file with the content
+
+        # Resolve into bytes
+        file_bytes = None
+
+        # 1) content directly provided (string or bytes)
+        if isinstance(content, (bytes, bytearray)):
+            file_bytes = bytes(content)
+            print("[/api/files POST] using raw bytes content", flush=True)
+        elif isinstance(content, str):
+            # treat as text content
+            file_bytes = content.encode('utf-8')
+            print("[/api/files POST] using UTF-8 encoded text content", flush=True)
+
+        # 2) base64 string (with or without data URL prefix)
+        if file_bytes is None and content_base64:
+            print("[/api/files POST] decoding content_base64", flush=True)
+            import base64
+            b64 = content_base64
+            if ';base64,' in b64:
+                b64 = b64.split(';base64,', 1)[1]
+            elif ',' in b64 and b64.strip().startswith('data:'):
+                b64 = b64.split(',', 1)[1]
+            file_bytes = base64.b64decode(b64)
+
+        # 3) data URL like data:application/pdf;base64,AAAA...
+        if file_bytes is None and data_url:
+            print("[/api/files POST] decoding data_url", flush=True)
+            import base64
+            if ',' not in data_url:
+                return jsonify({'error': 'Invalid dataUrl format'}), 400
+            b64 = data_url.split(',', 1)[1]
+            file_bytes = base64.b64decode(b64)
+
+        # 4) fetch from remote URL
+        if file_bytes is None and remote_url:
+            print(f"[/api/files POST] fetching remote url: {remote_url}", flush=True)
+            r = requests.get(remote_url, timeout=30)
+            r.raise_for_status()
+            file_bytes = r.content
+
+        if file_bytes is None:
+            print("[/api/files POST] ERROR: no content supplied", flush=True)
+            return jsonify({
+                'error': "No content provided.",
+                'hint': "Send one of: content (string/bytes), contentBase64, dataUrl, or url."
+            }), 400
+
+        # Write to temp file
         with tempfile.NamedTemporaryFile(delete=False) as temp:
-            if isinstance(content, str):
-                temp.write(content.encode('utf-8'))
-            else:
-                temp.write(content)
-        
+            temp.write(file_bytes)
+            temp_path = temp.name
+
         try:
-            # Prepare file metadata
-            file_metadata = {
-                'name': name,
-                'mimeType': mime_type
-            }
-            
+            metadata = {'name': name, 'mimeType': mime_type}
             if parents:
-                file_metadata['parents'] = parents if isinstance(parents, list) else [parents]
-            
-            # Upload the file
-            media = MediaFileUpload(temp.name, mimetype=mime_type)
-            file = drive_service.files().create(
-                body=file_metadata,
+                metadata['parents'] = parents if isinstance(parents, list) else [parents]
+
+            media = MediaFileUpload(temp_path, mimetype=mime_type, resumable=False)
+            created = drive_service.files().create(
+                body=metadata,
                 media_body=media,
                 fields='id,name,mimeType,createdTime,modifiedTime,webViewLink'
             ).execute()
-            
-            return jsonify(file)
-        
+            print(f"[/api/files POST] created file id={created.get('id')}", flush=True)
+            return jsonify(created)
         finally:
-            # Clean up the temporary file
-            if os.path.exists(temp.name):
-                os.unlink(temp.name)
-    
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
     except Exception as e:
-        print(f"Error creating file: {e}")
-        print(traceback.format_exc())
+        print(f"[/api/files POST] ERROR: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/files/<file_id>', methods=['PUT'])
@@ -1050,31 +1098,45 @@ def get_templates():
 
 @app.route('/api/templates/<template_id>', methods=['GET'])
 def get_template(template_id):
-    """Get a single template by ID"""
+    """Get a single template by ID (avoid shadowing Flask's `request`)."""
     credentials = get_credentials()
     if not credentials:
         return jsonify({'error': 'Authentication required. Please sign in.'}), 401
-    
+
     try:
         drive_service = get_drive_service()
-        request = drive_service.files().get_media(fileId=template_id)
+        print(f"[get_template] START template_id={template_id}")
+
+        # DO NOT name this variable `request` (that shadows Flask's request)
+        media_req = drive_service.files().get_media(fileId=template_id)
         content = io.BytesIO()
-        downloader = MediaIoBaseDownload(content, request)
-        
+        downloader = MediaIoBaseDownload(content, media_req)
+
         done = False
         while not done:
             status, done = downloader.next_chunk()
-        
+            if status is not None:
+                try:
+                    print(f"[get_template] Download progress: {int(status.progress() * 100)}%")
+                except Exception:
+                    pass
+
         content.seek(0)
-        template_data = json.loads(content.read().decode('utf-8'))
-        
-        # Add file ID to template object
+        raw = content.read()
+        print(f"[get_template] Downloaded bytes: {len(raw)}")
+
+        # Decode JSON safely
+        try:
+            template_data = json.loads(raw.decode('utf-8'))
+        except Exception as parse_err:
+            print(f"[get_template] ERROR parsing JSON: {parse_err}")
+            return jsonify({'error': 'Invalid template JSON in Drive'}), 500
+
         template_data['fileId'] = template_id
-        
         return jsonify(template_data)
-    
+
     except Exception as e:
-        print(f"Error fetching template {template_id}: {e}")
+        print(f"[get_template] ERROR template_id={template_id}: {e}")
         print(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
@@ -1153,96 +1215,94 @@ def create_template():
 
 @app.route('/api/templates/<template_id>', methods=['PUT'])
 def update_template(template_id):
-    """Update an existing template"""
+    """Update an existing template (fixes request shadowing + adds debug)."""
     credentials = get_credentials()
     if not credentials:
         return jsonify({'error': 'Authentication required. Please sign in.'}), 401
-    
+
     try:
         drive_service = get_drive_service()
-        
-        # Get the existing template
-        request = drive_service.files().get_media(fileId=template_id)
+        print(f"[update_template] START template_id={template_id}")
+
+        # --- Download existing JSON (avoid shadowing Flask's `request`) ---
+        media_req = drive_service.files().get_media(fileId=template_id)
         content = io.BytesIO()
-        downloader = MediaIoBaseDownload(content, request)
-        
+        downloader = MediaIoBaseDownload(content, media_req)
+
         done = False
         while not done:
             status, done = downloader.next_chunk()
-        
+            if status is not None:
+                try:
+                    print(f"[update_template] Download progress: {int(status.progress() * 100)}%")
+                except Exception:
+                    pass
+
         content.seek(0)
-        existing_template = json.loads(content.read().decode('utf-8'))
-        
-        # Merge with updates
-        template_data = request.json
-        updated_template = {
+        raw_json_bytes = content.read()
+        print(f"[update_template] Downloaded bytes: {len(raw_json_bytes)}")
+
+        # Parse existing template JSON
+        try:
+            existing_template = json.loads(raw_json_bytes.decode("utf-8"))
+            print(f"[update_template] Existing template keys: {list(existing_template.keys())}")
+        except Exception as parse_err:
+            print(f"[update_template] WARN: Failed to parse existing JSON: {parse_err}")
+            existing_template = {}
+
+        # --- Read incoming JSON body from Flask request ---
+        incoming = request.get_json(silent=True) or {}
+        print(f"[update_template] Incoming update keys: {list(incoming.keys())}")
+
+        # Merge and bump version
+        updated = {
             **existing_template,
-            **template_data,
+            **incoming,
             'updatedAt': datetime.now().isoformat()
         }
-        
-        # Increment version if it exists
-        if 'version' in existing_template:
-            try:
-                version_parts = existing_template['version'].replace('v', '').split('.')
-                major = int(version_parts[0])
-                minor = int(version_parts[1]) + 1
-                updated_template['version'] = f"{major}.{minor}"
-            except:
-                updated_template['version'] = '1.0'
-        else:
-            updated_template['version'] = '1.0'
-        
-        # Convert to JSON string
-        template_content = json.dumps(updated_template, indent=2)
-        
-        # Create a temporary file with the content
-        with tempfile.NamedTemporaryFile(delete=False) as temp:
-            temp.write(template_content.encode('utf-8'))
-        
+
+        prev_version = (existing_template.get('version') or '0.0').lstrip('v')
         try:
-            # Upload the file
-            media = MediaFileUpload(temp.name, mimetype='application/json')
-            file = drive_service.files().update(
+            major, minor = (prev_version.split('.') + ['0', '0'])[:2]
+            major_i = int(major)
+            minor_i = int(minor) + 1
+            updated['version'] = f"{major_i}.{minor_i}"
+        except Exception:
+            updated['version'] = '1.0'
+        print(f"[update_template] Version: {existing_template.get('version')} -> {updated['version']}")
+
+        # Write updated JSON to a temp file for upload
+        data_str = json.dumps(updated, indent=2)
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp.write(data_str.encode('utf-8'))
+            tmp_path = tmp.name
+        print(f"[update_template] Temp file written: {tmp_path} ({len(data_str)} chars)")
+
+        try:
+            media = MediaFileUpload(tmp_path, mimetype='application/json')
+            file_obj = drive_service.files().update(
                 fileId=template_id,
                 media_body=media,
                 fields='id,name,mimeType,modifiedTime'
             ).execute()
-            
-            # Add file metadata to template
-            result = {
-                **updated_template,
-                'fileId': file['id'],
-                'fileName': file['name'],
-                'modifiedTime': file['modifiedTime']
-            }
-            
-            return jsonify(result)
-        
+            print(f"[update_template] Drive update OK: id={file_obj.get('id')} modified={file_obj.get('modifiedTime')}")
         finally:
-            # Clean up the temporary file
-            if os.path.exists(temp.name):
-                os.unlink(temp.name)
-    
-    except Exception as e:
-        print(f"Error updating template {template_id}: {e}")
-        print(traceback.format_exc())
-        return jsonify({'error': str(e)}), 500
+            try:
+                os.unlink(tmp_path)
+                print(f"[update_template] Temp file removed: {tmp_path}")
+            except Exception as del_err:
+                print(f"[update_template] WARN: Could not remove temp file: {del_err}")
 
-@app.route('/api/templates/<template_id>', methods=['DELETE'])
-def delete_template(template_id):
-    """Delete a template"""
-    credentials = get_credentials()
-    if not credentials:
-        return jsonify({'error': 'Authentication required. Please sign in.'}), 401
-    
-    try:
-        drive_service = get_drive_service()
-        drive_service.files().delete(fileId=template_id).execute()
-        return jsonify({'success': True, 'message': f'Template {template_id} deleted successfully'})
-    
+        result = {
+            **updated,
+            'fileId': file_obj['id'],
+            'fileName': file_obj['name'],
+            'modifiedTime': file_obj['modifiedTime']
+        }
+        return jsonify(result)
+
     except Exception as e:
-        print(f"Error deleting template {template_id}: {e}")
+        print(f"[update_template] ERROR template_id={template_id}: {e}")
         print(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 

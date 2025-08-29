@@ -12,14 +12,3 @@ root.render(
     <IntegrationTest />
   </React.StrictMode>
 );
-
-// If you're still using React 17, use this instead:
-/*
-import ReactDOM from 'react-dom';
-ReactDOM.render(
-  <React.StrictMode>
-    <IntegrationTest />
-  </React.StrictMode>,
-  document.getElementById('root')
-);
-*/

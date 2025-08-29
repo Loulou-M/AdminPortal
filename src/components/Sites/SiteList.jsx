@@ -20,7 +20,7 @@ function normalizeSite(raw) {
     name,
     location,
     folderLink,
-    folderType
+    folderType,
   };
 }
 
@@ -31,11 +31,11 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortField, setSortField] = useState('name');
   const [sortDirection, setSortDirection] = useState('asc');
-  
+
   // State for QR code modal
   const [showQRModal, setShowQRModal] = useState(false);
   const [selectedSite, setSelectedSite] = useState(null);
-  
+
   // State for edit mode
   const [isEditing, setIsEditing] = useState(false);
   const [siteToEdit, setSiteToEdit] = useState(null);
@@ -50,8 +50,8 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
       setIsLoading(true);
       setError(null);
       const loadedSites = await getSites();
-      const normalized = Array.isArray(loadedSites) 
-        ? loadedSites.map(normalizeSite).filter(Boolean) 
+      const normalized = Array.isArray(loadedSites)
+        ? loadedSites.map(normalizeSite).filter(Boolean)
         : [];
       setSites(normalized);
     } catch (err) {
@@ -130,43 +130,43 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
     // Create a canvas element
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
-    
+
     // Create an image from the SVG
     const image = new Image();
     const svgData = new XMLSerializer().serializeToString(svg);
     const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(svgBlob);
-    
+
     image.onload = () => {
       // Set canvas dimensions to match the SVG but scaled up for better quality
       canvas.width = image.width * 3;
       canvas.height = image.height * 3;
-      
+
       // Fill with white background
       ctx.fillStyle = 'white';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      
+
       // Draw the image
       ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-      
+
       // Create a download link
       const link = document.createElement('a');
       link.download = `${selectedSite.name.replace(/\s+/g, '_') || 'site'}_QR.png`;
-      
+
       // Convert canvas to blob and create URL
       canvas.toBlob((blob) => {
         const url = URL.createObjectURL(blob);
         link.href = url;
         link.click();
-        
+
         // Clean up
         URL.revokeObjectURL(url);
       });
-      
+
       // Clean up SVG URL
       URL.revokeObjectURL(url);
     };
-    
+
     image.src = url;
   };
 
@@ -193,7 +193,7 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
   const handleCopy = async (text) => {
     try {
       await navigator.clipboard.writeText(text);
-      alert("Link copied to clipboard");
+      alert('Link copied to clipboard');
     } catch {
       // Silent fail for browsers that block clipboard in HTTP context
     }
@@ -202,7 +202,7 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
   // If in edit mode, show the EditSite component
   if (isEditing && siteToEdit) {
     return (
-      <EditSite 
+      <EditSite
         site={siteToEdit}
         onSave={handleSaveComplete}
         onCancel={handleCancelEdit}
@@ -222,9 +222,11 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
         <div className="qr-modal" onClick={(e) => e.stopPropagation()}>
           <div className="qr-modal-header">
             <h3>{title} QR Code</h3>
-            <button className="close-button" onClick={closeQRModal}>×</button>
+            <button className="close-button" onClick={closeQRModal}>
+              ×
+            </button>
           </div>
-          
+
           <div className="qr-modal-content">
             <div className="qr-code-container">
               <QRCode
@@ -236,14 +238,18 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
                 fgColor="#000000"
               />
             </div>
-            
+
             <div className="qr-code-info">
-              <p><strong>Site:</strong> {title}</p>
-              <p><strong>Location:</strong> {selectedSite.location || 'No location specified'}</p>
+              <p>
+                <strong>Site:</strong> {title}
+              </p>
+              <p>
+                <strong>Location:</strong> {selectedSite.location || 'No location specified'}
+              </p>
               <p className="qr-url">
-                <strong>URL:</strong> 
+                <strong>URL:</strong>
                 <span className="url-text">{url}</span>
-                <button 
+                <button
                   className="copy-button"
                   onClick={() => handleCopy(url)}
                   title="Copy URL"
@@ -251,11 +257,8 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
                   Copy
                 </button>
               </p>
-              
-              <button 
-                className="download-button" 
-                onClick={downloadQRCode}
-              >
+
+              <button className="download-button" onClick={downloadQRCode}>
                 Download QR Code
               </button>
             </div>
@@ -317,12 +320,12 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
         }
         
         .create-button {
-          background-color: #4caf50;
+          background-color: #1976d2; /* New primary blue */
           color: white;
         }
         
         .create-button:hover {
-          background-color: #388e3c;
+          background-color: #1565c0; /* Darker blue for hover */
         }
         
         .error-message {
@@ -444,12 +447,12 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
         }
         
         .view-documents-button {
-          background-color: #e8f5e9;
-          color: #2e7d32;
+          background-color: #e3f2fd; /* New secondary light blue */
+          color: #1565c0; /* New secondary text blue */
         }
         
         .view-documents-button:hover {
-          background-color: #c8e6c9;
+          background-color: #bbdefb; /* New hover blue */
         }
         
         .qr-button {
@@ -588,7 +591,7 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
         .download-button {
           margin-top: 15px;
           padding: 10px 16px;
-          background-color: #4caf50;
+          background-color: #1976d2; /* New primary blue */
           color: white;
           border: none;
           border-radius: 4px;
@@ -597,23 +600,22 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
         }
         
         .download-button:hover {
-          background-color: #388e3c;
+          background-color: #1565c0; /* Darker blue for hover */
         }
       `}</style>
-
       <div className="site-list-header">
         <h2>Construction Sites</h2>
         <div className="header-actions">
-          <button 
-            className="refresh-button" 
+          <button
+            className="refresh-button"
             onClick={loadSites}
             disabled={isLoading}
           >
             {isLoading ? 'Loading...' : 'Refresh'}
           </button>
-          <button 
+          <button
             className="create-button"
-            onClick={() => window.location.href = '/site/new'}
+            onClick={() => (window.location.href = '/site/new')}
           >
             + Create Site
           </button>
@@ -656,22 +658,28 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
           <table className="sites-table">
             <thead>
               <tr>
-                <th 
+                <th
                   onClick={() => handleSort('name')}
                   className={sortField === 'name' ? `sorted-${sortDirection}` : ''}
+                  role="button"
+                  aria-sort={sortField === 'name' ? `${sortDirection}ending` : 'none'}
                 >
                   Site Name
                 </th>
-                <th 
+                <th
                   onClick={() => handleSort('location')}
                   className={sortField === 'location' ? `sorted-${sortDirection}` : ''}
+                  role="button"
+                  aria-sort={sortField === 'location' ? `${sortDirection}ending` : 'none'}
                 >
                   Location
                 </th>
                 <th>QR Code</th>
-                <th 
+                <th
                   onClick={() => handleSort('folderType')}
                   className={sortField === 'folderType' ? `sorted-${sortDirection}` : ''}
+                  role="button"
+                  aria-sort={sortField === 'folderType' ? `${sortDirection}ending` : 'none'}
                 >
                   Storage Type
                 </th>
@@ -685,7 +693,7 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
                   <td>{site.location || '—'}</td>
                   <td className="site-qr">
                     {site.folderLink ? (
-                      <div 
+                      <div
                         className="site-qr-thumbnail"
                         onClick={() => openQRModal(site)}
                         title="Click to view and download QR code"
@@ -706,42 +714,42 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
                   <td className="site-actions">
                     <div className="action-buttons">
                       {site.folderLink && (
-                        <a 
-                          href={site.folderLink} 
-                          target="_blank" 
+                        <a
+                          href={site.folderLink}
+                          target="_blank"
                           rel="noopener noreferrer"
                           className="view-folder-button"
                         >
                           View Folder
                         </a>
                       )}
-                      
+
                       {onViewDocuments && (
-                        <button 
+                        <button
                           onClick={() => onViewDocuments(site)}
                           className="view-documents-button"
                         >
                           Documents
                         </button>
                       )}
-                      
+
                       {site.folderLink && (
-                        <button 
+                        <button
                           onClick={() => openQRModal(site)}
                           className="qr-button"
                         >
                           QR Code
                         </button>
                       )}
-                      
-                      <button 
+
+                      <button
                         onClick={() => handleEdit(site)}
                         className="edit-button"
                       >
                         Edit
                       </button>
-                      
-                      <button 
+
+                      <button
                         onClick={() => handleDelete(site.id, site.name)}
                         className="delete-button"
                       >
@@ -761,21 +769,5 @@ const SiteList = ({ onViewDocuments, refreshTrigger }) => {
     </div>
   );
 };
-
-// Helper to format date
-function formatDate(dateString) {
-  if (!dateString) return 'Unknown';
-  const date = new Date(dateString);
-  if (isNaN(date.getTime())) return dateString;
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (date.toDateString() === today.toDateString()) return 'Today';
-  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
-  if (today.getFullYear() === date.getFullYear()) {
-    return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  }
-  return date.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
-}
 
 export default SiteList;

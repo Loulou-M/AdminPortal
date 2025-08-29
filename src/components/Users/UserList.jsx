@@ -75,68 +75,132 @@ const UserList = () => {
     <div className="user-list-container">
       <style>{`
         .user-list-container {
-          padding: 20px;
-          background: #fff;
-          border-radius: 8px;
-          box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+          padding: 2.5rem;
+          background-color: #f8fafc; /* Very soft, light background */
+          border-radius: 12px;
+          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+          font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; /* A more modern font */
         }
         .user-list-container h1 {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          margin-bottom: 20px;
-          padding-bottom: 15px;
-          border-bottom: 1px solid #eee;
+          margin-bottom: 2rem;
+          padding-bottom: 1rem;
+          border-bottom: 1px solid #e2e8f0;
+          font-size: 2rem;
+          color: #1e293b;
+          font-weight: 700;
         }
         .error {
-          padding: 12px;
-          background-color: #ffeded;
-          border-left: 4px solid #ff5252;
-          margin-bottom: 20px;
-          border-radius: 4px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
+          padding: 1rem;
+          background-color: #fff1f2;
+          border-left: 4px solid #ef4444;
+          color: #be123c;
+          margin-bottom: 1.5rem;
+          border-radius: 6px;
+          font-weight: 500;
         }
         .add-button {
-          background-color: #4caf50;
+          background-color: #1d4ed8; /* A darker, more professional blue */
           color: white;
+          padding: 0.75rem 1.5rem;
+          border: none;
+          border-radius: 50px; /* Rounded button to match IntegrationTest.css */
+          font-size: 0.95rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          margin-bottom: 1.5rem;
+          box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
         .add-button:hover {
-          background-color: #388e3c;
+          background-color: #1e40af;
+          transform: translateY(-2px);
         }
         .user-table {
           width: 100%;
-          border-collapse: collapse;
-          border-radius: 8px;
+          border-collapse: separate;
+          border-spacing: 0;
+          border-radius: 10px;
           overflow: hidden;
+          box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
         }
-        .user-table th, 
+        .user-table th,
         .user-table td {
-          background-color: #f7f7f7;
-          padding: 12px 15px;
+          padding: 1rem 1.25rem; /* Match the padding from IntegrationTest.css */
           text-align: left;
-          font-weight: 600;
-          color: #333;
-          border-bottom: 2px solid #eee;
-          cursor: pointer;
+          border-bottom: 1px solid #e2e8f0;
+          font-size: 0.875rem; /* Smaller font size for better data density */
         }
-        .user-table tr:hover {
-          background-color: #f9f9f9;
+        .user-table th {
+          background-color: #eef2ff; /* Light, elegant header background */
+          color: #4b5563;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+        }
+        .user-table td {
+          background-color: #ffffff;
+          color: #374151;
+        }
+        .user-table tbody tr:nth-child(even) td {
+          background-color: #f9fafb; /* Subtle striped effect */
+        }
+        .user-table tbody tr:last-child td {
+          border-bottom: none;
+        }
+        .user-table tbody tr:hover td {
+          background-color: #eff6ff; /* A hover color that fits the blue theme */
+        }
+        .actions-cell {
+          width: 180px; /* Fixed width for actions column */
+          text-align: right; /* Right-align the buttons for better UI balance */
+        }
+        .action-buttons {
+          display: flex;
+          justify-content: flex-end;
+          gap: 0.5rem; /* Consistent spacing between buttons */
+        }
+        .action-button {
+          padding: 0.5rem 0.8rem;
+          border: none;
+          border-radius: 50px; /* Match the rounded style from IntegrationTest.css */
+          font-size: 0.75rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s ease;
         }
         .edit-button {
-          background-color: #fff8e1;
-          color: #f57f17;
+          background-color: #fef3c7;
+          color: #92400e;
         }
         .edit-button:hover {
-          background-color: #ffecb3;
+          background-color: #fde68a;
+          transform: translateY(-2px);
         }
         .delete-button {
-          background-color: #ffebee;
-          color: #c62828;
+          background-color: #fee2e2;
+          color: #991b1b;
         }
         .delete-button:hover {
-          background-color: #ffcdd2;
+          background-color: #fca5a5;
+          transform: translateY(-2px);
+        }
+        .no-users {
+          padding: 2rem;
+          text-align: center;
+          color: #9ca3af;
+          background-color: #ffffff;
+          border-radius: 8px;
+          font-style: italic;
+        }
+        .loading {
+          display: flex;
+          justify-content: center;
+          padding: 2rem;
+          color: #6b7280;
+          font-style: italic;
         }
       `}</style>
 
@@ -157,7 +221,7 @@ const UserList = () => {
           </button>
 
           {isLoading ? (
-            <p>Loading users...</p>
+            <p className="loading">Loading users...</p>
           ) : (
             <table className="user-table">
               <thead>
@@ -177,25 +241,27 @@ const UserList = () => {
                       <td>{user.email}</td>
                       <td>{user.company}</td>
                       <td>{user.role}</td>
-                      <td>
-                        <button
-                          onClick={() => handleEdit(user.fileId)}
-                          className="edit-button"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => handleDelete(user.fileId)}
-                          className="delete-button"
-                        >
-                          Delete
-                        </button>
+                      <td className="actions-cell">
+                        <div className="action-buttons">
+                          <button
+                            onClick={() => handleEdit(user.fileId)}
+                            className="action-button edit-button"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleDelete(user.fileId)}
+                            className="action-button delete-button"
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan="5">No users found.</td>
+                    <td colSpan="5" className="no-users">No users found.</td>
                   </tr>
                 )}
               </tbody>
